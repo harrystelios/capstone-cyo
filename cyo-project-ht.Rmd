@@ -1,0 +1,146 @@
+---
+title: "CYO Project - Liver Disease Prediction"
+author: "Harry Terris"
+date: "`r format(Sys.Date())`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this project, we develop and evaluate two machine learning models for predicting the presence of liver disease in patients based on age, gender and a range of diagnostic tests.
+
+We use the [Indian Liver Patient Dataset](http://archive.ics.uci.edu/ml/datasets/ILPD+%28Indian+Liver+Patient+Dataset%29) downloaded from the UCI Machine Learning Repository.^[Dua, D. and Graff, C. (2019). UCI Machine Learning Repository [http://archive.ics.uci.edu/ml]. Irvine, CA: University of California, School of Information and Computer Science.]
+
+The dataset comprises records on 582 patients, and "was collected from north east of Andhra Pradesh, India," according to the UCI Machine Learning Repository website. The records contain information on age, gender, diagnostic test results, and whether the patient was a liver patient or not.
+
+The main steps for this project are:
+
+* Load the data, explore it and split it into training and test sets
+* Train the machine learning algorithms
+* Evaluate the algorithms using the test set
+
+## Methods and Analysis
+
+First, we load the libraries used in this project.
+
+```{r loading-libs, message = FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+```
+
+Next, we download the dataset and feed it into a dataframe object.
+
+```{r loading-data}
+dl <- tempfile()
+download.file("http://archive.ics.uci.edu/ml/machine-learning-databases/00225/Indian%20Liver%20Patient%20Dataset%20(ILPD).csv", dl)
+dat <- read.csv(dl, col.names = c("age", "gender", "tBilirubin", "dBilirubin",
+                                  "aAP", "sgptAA",
+                                  "sgotAA", "tProtiens",
+                                  "Albumin", "AlbuminGRatio", "Selector"))
+rm(dl)
+```
+
+We check for missing values.
+
+```{r missing-values}
+colSums(is.na(dat))
+```
+
+There are four missing values in the dataset, all for AlbuminGRatio. We remove these records.
+
+```{r remove-missing}
+dat <- dat[-which(is.na(dat$AlbuminGRatio)), ]
+```
+
+That leaves **_`r nrow(dat)`_** records, with **_`r sum(dat$Selector == 1)`_** for patients with liver disease and **_`r sum(dat$Selector == 2)`_** for patients without liver disease. **_`r sum(dat$gender == "Male")`_** are for male patients and **_`r sum(dat$gender == "Female")`_** are for female patients.
+
+The following table shows correlations among the diagnostic test results.
+
+```{r correlations, echo = FALSE}
+dat %>% select("tBilirubin", "dBilirubin",
+               "aAP", "sgptAA",
+               "sgotAA", "tProtiens",
+               "Albumin", "AlbuminGRatio") %>% cor() %>% round(., 2)
+```
+
+We find that tBilirubin is highly correlated with dBilirubin; sgptAA is highly correlated with sgotAA; and tProtiens is highly correlated with Albumin. We remove the second feature from each pair as a preprocessing step. We also convert the field classifying patients by presence of liver disease into a Boolean variable.
+
+```{r trim-features}
+dat <- dat %>% select("age", "gender", "tBilirubin", "aAP", "sgptAA", "tProtiens",
+                      "AlbuminGRatio", "Selector") %>%
+  mutate(Disease = as.factor(ifelse(Selector == 1, 0, 1))) %>% select(-Selector)
+```
+
+Now we create training and test sets.
+
+```{r partition}
+set.seed(2019)
+test_index <- createDataPartition(y = dat$Disease, times = 1, p = 0.2, list = FALSE)
+train_set <- dat[-test_index, ]
+test_set <- dat[test_index, ]
+```
+
+We are ready to train a k-nearest neighbors model. We use the train function in the caret package, performing cross validation with the default 25 bootstrap samples, each including 25% of the training set observations. We optimize for accuracy across 34 values for k ranging from 5 to 71.
+
+```{r train-knn}
+train_knn <- train(Disease ~ ., method = "knn", 
+                   data = train_set,
+                   tuneGrid = data.frame(k = seq(5, 71, 2)))
+```
+
+The following plot shows that k=**_`r train_knn$bestTune$k`_** optimizes for accuracy across the values considered. We note that that seems like a large neighborhood.
+
+```{r knn-cv-results, echo = FALSE}
+ggplot(train_knn, highlight = TRUE)
+```
+
+We also train a classification tree. Again, we use caret's default for cross validation. We optimize for accuracy across a range of values for the complexity parameter, or a minimum for how much the loss function must improve for another partition to be added.
+
+```{r train-rpart}
+train_rpart <- train(Disease ~ ., 
+                     method = "rpart",
+                     tuneGrid = data.frame(cp = seq(0, 0.025, len = 25)),
+                     data = train_set)
+```
+
+The following plot shows that cp=**_`r round(train_rpart$bestTune$cp, 3)`_** optimizes for accuracy across the values considered.
+
+```{r rpart-cv-results, echo = FALSE}
+ggplot(train_rpart, highlight = TRUE)
+```
+
+Here is an image of decision tree for the optimized complexity parameter. The partitions appear to be quite messy.
+
+```{r decision-tree-image, echo = FALSE}
+plot(train_rpart$finalModel, margin = 0.1)
+text(train_rpart$finalModel, cex = 0.75)
+```
+
+## Results
+
+Evaluating the k-nearest neighbors model against the test set shows moderate accuracy (**_`r round(confusionMatrix(predict(train_knn, test_set), test_set$Disease)$overall["Accuracy"], 2)`_**), the result of high sensitivity and low specificity and a high prevalance of patients in the data with liver disease. Here are the evaluation metrics produced by the confusionMatrix function.
+
+```{r knn-confusionMatrix, echo = FALSE}
+confusionMatrix(predict(train_knn, test_set), test_set$Disease)
+```
+
+The classification tree shows comparable accuracy (**_`r round(confusionMatrix(predict(train_rpart, test_set), test_set$Disease)$overall["Accuracy"], 2)`_**), but with less of an imbalance between sensitivity and specificity.
+
+```{r rpart-confusionMatrix, echo = FALSE}
+confusionMatrix(predict(train_rpart, test_set), test_set$Disease)
+```
+
+## Conclusion
+
+The accuracy of both models generated and evaluated here was modest. Both also showed low specificity against the test set, with the k-nearest neighbors model performing especially poorly on this dimension.
+
+Further experimentation is clearly warranted to develop a more robust model. The task could also be made easier with a larger dataset, and one that is more balanced between patients with liver disease and patients without liver disease.
+
+
+
+
